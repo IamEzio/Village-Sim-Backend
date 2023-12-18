@@ -102,16 +102,16 @@ def cluster_houses(houses_coord, epsilon=EPSILON, min_samples=MIN_SAMPLES):
     labels = db.labels_
 
     clusters = {}
+    print("labels: ", labels)
     for i, label in enumerate(labels):
         if label not in clusters:
             clusters[label] = []
         clusters[label].append(list(houses_coord.keys())[i])  # Append house UUID
 
-    print("clusters: ", clusters)
+    print("clusters: ", len(clusters))
 
     result_clusters = [
-        dict.fromkeys(cluster, houses_coord[cluster[0]])
-        for cluster in clusters.values()
+        {uuid: houses_coord[uuid] for uuid in cluster} for cluster in clusters.values()
     ]
     print("res: ", result_clusters)
 
@@ -247,9 +247,8 @@ def calculate_initial_happiness(initial_data: dict) -> Tuple[dict, float, dict]:
     print("Total houses in each cluster: ", a)
     # print("Cluster with minimum houses: ", minpos, " ", house_clusters[minpos])
 
-    for house_data in house_clusters[1].values():
+    for house_data in house_clusters[minpos].values():
         print("House coordinates: ", house_data["central_point"])
-    exit()
     # get average of all happiness
     for facility in happiness.keys():
         avg_happiness += happiness[facility]
