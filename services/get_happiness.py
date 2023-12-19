@@ -8,13 +8,14 @@ import numpy as np
 import osmnx as ox
 import networkx as nx
 from geopandas import GeoSeries
+from pyproj import Transformer
 from shapely.geometry import Point
 from sklearn.cluster import DBSCAN
 from typing import Tuple
 
 MAX_HAPPINESS = 2
-EPSILON = 0.00015
-MIN_SAMPLES = 10
+EPSILON = 0.00010
+MIN_SAMPLES = 4
 np.random.seed(0)
 
 facility_points = {
@@ -118,7 +119,7 @@ def cluster_houses(houses_coord, epsilon=EPSILON, min_samples=MIN_SAMPLES):
     return result_clusters
 
 
-def calculate_cluster_centroid(cluster, houses):
+def calculate_cluster_centroid(cluster, houses) -> dict:
     total_lat = 0
     total_lon = 0
     for house_uuid in cluster.keys():
@@ -147,45 +148,6 @@ def calculate_initial_happiness(initial_data: dict) -> Tuple[dict, float, dict]:
     for facility in facilities.keys():
         happiness[facility] = 0
     avg_happiness = 0
-
-    # for house_uuid in houses.keys():
-    #     nearest_dist = {}
-    #     for facility in facilities.keys():
-    #         distance = float("inf")
-    #         uuid = ""
-
-    #         for facility_uuid in facilities[facility].keys():
-    #             point1 = houses[house_uuid]["central_point"]
-    #             point2 = facilities[facility][facility_uuid]["central_point"]
-
-    #             if facility_points[facility][1]:
-    #                 new_distance = dist_road(point1, point2)
-
-    #                 if new_distance < distance:
-    #                     distance = new_distance
-    #                     uuid = facility_uuid
-    #             else:
-    #                 new_distance = dist_euclidean(point1, point2)
-
-    #                 if new_distance < distance:
-    #                     distance = new_distance
-    #                     uuid = facility_uuid
-
-    #         nearest_dist[facility] = {"id": uuid, "dist": distance}
-
-    #         if distance != float("inf"):
-    #             if facility_points[facility][1]:
-    #                 if distance > 0:
-    #                     happiness[facility] += facility_points[facility][0] / distance
-    #                 else:
-    #                     happiness[facility] = MAX_HAPPINESS
-    #             else:
-    #                 happiness[facility] += (
-    #                     facility_points[facility][0] * distance / max_dist
-    #                 )
-
-    #     initial_data["old"]["houses"][house_uuid]["nearest_dist"] = nearest_dist
-
     start = time.time()
 
     house_clusters = cluster_houses(houses)
@@ -196,6 +158,9 @@ def calculate_initial_happiness(initial_data: dict) -> Tuple[dict, float, dict]:
     a = []
     for cluster in house_clusters:
         cluster_centroid = calculate_cluster_centroid(cluster, houses)
+        cluster_node = ox.nearest_nodes(
+            Gc, cluster_centroid["central_point"].x, cluster_centroid["central_point"].y
+        )
         nearest_dist = {}
 
         for facility in facilities.keys():
@@ -204,9 +169,12 @@ def calculate_initial_happiness(initial_data: dict) -> Tuple[dict, float, dict]:
             for facility_uuid in facilities[facility].keys():
                 point1 = cluster_centroid["central_point"]
                 point2 = facilities[facility][facility_uuid]["central_point"]
+                facility_node = facilities[facility][facility_uuid]["node"]
 
                 if facility_points[facility][1]:
-                    new_distance = dist_road(point1, point2)
+                    new_distance = nx.shortest_path_length(
+                        G=Gc, source=cluster_node, target=facility_node, weight="length"
+                    )
                     if new_distance < distance:
                         distance = new_distance
                         uuid = facility_uuid
@@ -247,8 +215,8 @@ def calculate_initial_happiness(initial_data: dict) -> Tuple[dict, float, dict]:
     print("Total houses in each cluster: ", a)
     # print("Cluster with minimum houses: ", minpos, " ", house_clusters[minpos])
 
-    for house_data in house_clusters[minpos].values():
-        print("House coordinates: ", house_data["central_point"])
+    # for house_data in house_clusters[minpos].values():
+    #     print("House coordinates: ", house_data["central_point"])
     # get average of all happiness
     for facility in happiness.keys():
         avg_happiness += happiness[facility]
@@ -367,10 +335,13 @@ def convert_central_points(data: dict) -> dict:
 
     for key in data["old"]["facilities"].keys():
         for uuid in data["old"]["facilities"][key].keys():
-            d["old"]["facilities"][key][uuid]["central_point"] = Point(
-                d["old"]["facilities"][key][uuid]["central_point"]["long"],
-                d["old"]["facilities"][key][uuid]["central_point"]["lat"],
-            )
+            x = d["old"]["facilities"][key][uuid]["central_point"]["long"]
+            y = d["old"]["facilities"][key][uuid]["central_point"]["lat"]
+            d["old"]["facilities"][key][uuid]["central_point"] = Point(x, y)
+            (
+                d["old"]["facilities"][key][uuid]["node"],
+                d["old"]["facilities"][key][uuid]["dist"],
+            ) = ox.nearest_nodes(Gc, x, y, return_dist=True)
 
     if data["new"] != {}:
         data["new"]["central_point"] = Point(
@@ -385,17 +356,18 @@ if __name__ == "__main__":
     ox.settings.use_cache = True
     ox.settings.log_console = True
 
-    G = ox.graph_from_bbox(
-        north=28.65, south=28.45, east=77.8, west=77.6, network_type="all"
-    )
-    Gp = ox.project_graph(G)
-    Gc = ox.consolidate_intersections(
-        Gp, rebuild_graph=True, tolerance=20, dead_ends=False
-    )
+    # G = ox.graph_from_bbox(
+    #     north=28.65, south=28.45, east=77.8, west=77.6, network_type="all"
+    # )
+    # Gp = ox.project_graph(G)
+    # Gc = ox.consolidate_intersections(
+    #     Gp, rebuild_graph=True, tolerance=20, dead_ends=False
+    # )
 
-    ox.io.save_graphml(Gc, "cache.gml")
+    # ox.io.save_graphml(Gc, "cache.gml")
 
     Gc = ox.io.load_graphml("cache.gml")
+    transformer = Transformer.from_crs(Gc.graph["crs"], "EPSG:4326")
 
     max_dist = ox.stats.edge_length_total(Gc)
 
@@ -411,7 +383,7 @@ if __name__ == "__main__":
         happiness, avg_happiness, d = calculate_initial_happiness(d)
         print(happiness)
         print(avg_happiness)
-        print(d)
+        # print(d)
 
         d["new"] = {
             "key": "uuid",
@@ -419,6 +391,6 @@ if __name__ == "__main__":
             "central_point": Point(77.68305, 28.5398),
         }
 
-        happiness, avg_happiness, d = calculate_updated_happiness_on_adding_facility(
-            d, happiness
-        )
+        # happiness, avg_happiness, d = calculate_updated_happiness_on_adding_facility(
+        #     d, happiness
+        # )
