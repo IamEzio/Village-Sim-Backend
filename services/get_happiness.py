@@ -77,7 +77,7 @@ def calculate_cluster_centroid(cluster, houses) -> dict:
     return centroid
 
 
-def calculate_initial_happiness(initial_data: dict) -> Tuple[dict, float, dict]:
+def calculate_happiness(Gc, initial_data: dict) -> Tuple[dict, float, dict]:
     houses = initial_data["old"]["houses"]
     facilities = initial_data["old"]["facilities"]
 
@@ -201,7 +201,7 @@ if __name__ == "__main__":
         d = {"old": {"houses": houses_coord, "facilities": facilities_coord}}
         d = get_nodes_of_facilities(d)
 
-        happiness, avg_happiness, d = calculate_initial_happiness(d)
+        happiness, avg_happiness, d = calculate_happiness(Gc, d)
         print(happiness)
         print(avg_happiness)
 
