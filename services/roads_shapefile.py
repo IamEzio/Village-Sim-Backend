@@ -23,15 +23,19 @@ def fetch_roads_geojson(north: float, south: float, east: float, west: float) ->
     d: dict = json.loads(output)
     return d
 
-
 def clean_roads_data(data: dict) -> dict:
     roads = {}
     for f in data["features"]:
         if f["geometry"]["type"] == "LineString":
-            if type(f["properties"]["osmid"]) is str:
-                roads[int(f["properties"]["osmid"])] = f["geometry"]["coordinates"]
-            else:
-                roads[f["properties"]["osmid"][0]] = f["geometry"]["coordinates"]
+            try:
+                if type(f["properties"]["osmid"]) is str:
+                    roads[int(f["properties"]["osmid"])] = f["geometry"]["coordinates"]
+                elif type(f["properties"]["osmid"]) is int:
+                    roads[f["properties"]["osmid"]] = f["geometry"]["coordinates"]
+                else:
+                    roads[f["properties"]["osmid"][0]] = f["geometry"]["coordinates"]
+            except Exception:
+                pass
 
     return roads
 

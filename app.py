@@ -1,6 +1,7 @@
 import json
 
 from flask import Flask, request, jsonify
+from flask_cors import CORS
 from services.facilities import fetch_facilities
 from services.get_buildings_data import get_buildings_data
 from services.get_happiness import (
@@ -19,6 +20,7 @@ from services.roads_shapefile import (
 )
 
 app = Flask(__name__)
+CORS(app)
 
 
 @app.route("/residential/kalonda")
@@ -40,10 +42,10 @@ def get_facilities():
 @app.route("/roads", methods=["GET"])
 def get_roads():
     args = request.args
-    north = args.get("", default=28.58, type=float)
-    south = args.get("", default=(north - 0.12), type=float)
-    east = args.get("", default=77.72, type=float)
-    west = args.get("", default=(east - 0.12), type=float)
+    north = args.get("north", default=28.58, type=float)
+    south = args.get("south", default=(north - 0.12), type=float)
+    east = args.get("east", default=77.72, type=float)
+    west = args.get("west", default=(east + 0.12), type=float)
 
     geojson = fetch_roads_geojson(north, south, east, west)
     return clean_roads_data(geojson)
@@ -147,17 +149,20 @@ def get_local_bodies():
 def get_panchayats(statecode):
     compressed_csv_file_path = "data/selected_localbodies.csv.gz"
     df = pd.read_csv(compressed_csv_file_path)
-    # try:
-    state_code = int(statecode)
+    try:
+        state_code = int(statecode)
 
-    filtered_df = df[df["stateCode"] == state_code]
+        filtered_df = df[df["stateCode"] == state_code]
 
-    panchayats_list = filtered_df["coverage_entityName"].tolist()
+        panchayats_data = filtered_df[["coverage_entityName", "localBodyCode"]]
 
-    return jsonify({"panchayats": panchayats_list})
+        # Convert the result to a dictionary
+        panchayats_dict = panchayats_data.to_dict(orient="records")
 
-    # except Exception as e:
-    #     return jsonify({"error": str(e)}), 400
+        return jsonify({"panchayats": panchayats_dict})
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
 
 
 if __name__ == "__main__":
