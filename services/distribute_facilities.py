@@ -97,6 +97,8 @@ def calculate_total_happiness(cluster_data, facilities, facility_points):
         for facility in facilities.keys():
             distance = float("inf")
             for facility_uuid in facilities[facility].keys():
+                if facility_uuid == "happiness":
+                    continue
                 facility_node = facilities[facility][facility_uuid]["node"]
                 if facility_points[facility][1]:
                     new_distance = nx.shortest_path_length(
@@ -118,13 +120,16 @@ def calculate_total_happiness(cluster_data, facilities, facility_points):
                 if distance != float("inf"):
                     if facility_points[facility][1]:
                         if distance > 0:
-                            total_happiness += facility_points[facility][0] / distance
+                            facilities[facility]["happiness"] = (
+                                facility_points[facility][0] / distance
+                            )
                         else:
-                            total_happiness += MAX_HAPPINESS
+                            facilities[facility]["happiness"] = MAX_HAPPINESS
                     else:
-                        total_happiness += (
+                        facilities[facility]["happiness"] = (
                             facility_points[facility][0] * distance / max_dist
                         )
+            total_happiness += facilities[facility]["happiness"]
     avg_happiness = total_happiness / (
         len(facilities.keys()) * len(cluster_data.keys())
     )
@@ -132,7 +137,6 @@ def calculate_total_happiness(cluster_data, facilities, facility_points):
     print("len of facilities: ", len(facilities.keys()))
 
     print("happiness at this stage: ", avg_happiness)
-    time.sleep(1)
 
     return avg_happiness
 
@@ -164,7 +168,11 @@ def optimize_facility_coordinates(houses, facilities, facility_points):
     for _ in range(population_size):
         individual = deepcopy(facilities)
         for facility in individual.keys():
+            individual[facility]["happiness"] = 0
+        for facility in individual.keys():
             for facility_uuid in individual[facility].keys():
+                if facility_uuid == "happiness":
+                    continue
                 lat = random.uniform(28.4000000, 28.5200000)
                 lon = random.uniform(77.6500000, 77.7000000)
                 if facility_points[facility][1]:
@@ -195,11 +203,10 @@ def optimize_facility_coordinates(houses, facilities, facility_points):
         for i in range(population_size // 2):
             parent1 = random.choice(selected_population)
             parent2 = random.choice(selected_population)
-            crossover_point = random.randint(0, len(parent1) - 1)
 
             child = {}
-            for facility, coordinates in parent1.items():
-                if random.random() < 0.5:
+            for facility in parent1.keys():
+                if parent1[facility]["happiness"] > parent2[facility]["happiness"]:
                     child[facility] = deepcopy(parent1[facility])
                 else:
                     child[facility] = deepcopy(parent2[facility])
@@ -212,6 +219,8 @@ def optimize_facility_coordinates(houses, facilities, facility_points):
                 mutated_individual = new_population[i]
                 for facility in mutated_individual.keys():
                     for facility_uuid in mutated_individual[facility].keys():
+                        if facility_uuid == "happiness":
+                            continue
                         lat = random.uniform(28.4000000, 28.5200000)
                         lon = random.uniform(77.6500000, 77.7000000)
                         mutated_individual[facility][facility_uuid]["central_point"][
@@ -310,9 +319,12 @@ if __name__ == "__main__":
         print("Optimized Facilities:")
         print(optimized_facilities)
         for facility in optimized_facilities.keys():
-            for facility_uuid in optimized_facilities[facility].keys():
-                print(
-                    facility,
-                    facility_uuid,
-                    optimized_facilities[facility][facility_uuid]["central_point"],
-                )
+            # for facility_uuid in optimized_facilities[facility].keys():
+            #     if facility_uuid == "happiness":
+            #         continue
+            # print(
+            #     facility,
+            #     facility_uuid,
+            #     optimized_facilities[facility][facility_uuid]["central_point"],
+            # )
+            optimized_facilities[facility].pop("happiness")
