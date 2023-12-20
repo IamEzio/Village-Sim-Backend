@@ -1,13 +1,14 @@
 import json
 
 from flask import Flask, request, jsonify
+from flask_compress import Compress
+from flask_cors import CORS
 from services.facilities import fetch_facilities
 from services.get_buildings_data import get_buildings_data
 from services.get_happiness import (
-    calculate_initial_happiness,
-    calculate_updated_happiness_on_adding_facility,
+    calculate_happiness,
+    get_nodes_of_facilities,
 )
-from services.constants import fetch_constants, update_constants
 import requests
 import pandas as pd
 
@@ -17,8 +18,14 @@ from services.roads_shapefile import (
     fetch_geojson_from_shapefile,
     fetch_roads_geojson,
 )
+import osmnx as ox
+from os.path import exists
 
 app = Flask(__name__)
+CORS(app)
+Compress(app)
+
+ox.settings.use_cache = True
 
 
 @app.route("/residential/kalonda")
@@ -40,10 +47,10 @@ def get_facilities():
 @app.route("/roads", methods=["GET"])
 def get_roads():
     args = request.args
-    north = args.get("", default=28.58, type=float)
-    south = args.get("", default=(north - 0.12), type=float)
-    east = args.get("", default=77.72, type=float)
-    west = args.get("", default=(east - 0.12), type=float)
+    north = args.get("north", default=28.65, type=float)
+    south = args.get("south", default=28.45, type=float)
+    east = args.get("east", default=77.8, type=float)
+    west = args.get("west", default=77.6, type=float)
 
     geojson = fetch_roads_geojson(north, south, east, west)
     return clean_roads_data(geojson)
@@ -80,45 +87,40 @@ def get_facilities_houses():
     return {"old": {"houses": houses, "facilities": facilities}, "new": {}}
 
 
-@app.route("/get_initial_happiness", methods=["POST"])
-def get_initial_happiness():
-    try:
-        request_data = request.get_json()
-        result = calculate_initial_happiness(request_data)
-        return json.dumps(result)
+@app.route("/happiness", methods=["POST"])
+def get_happiness():
+    args = request.args
+    cache_key = args.get("cache", default="NOCACHE", type=str)
+    north = args.get("north", default=28.65, type=float)
+    south = args.get("south", default=28.45, type=float)
+    east = args.get("east", default=77.8, type=float)
+    west = args.get("west", default=77.6, type=float)
 
-    except Exception as e:
-        return json.dumps({"error": str(e)})
+    if cache_key != "NOCACHE" and exists(f"{cache_key}.gml"):
+        Gc = ox.io.load_graphml(f"{cache_key}.gml")
+    else:
+        G = ox.graph_from_bbox(
+            north=north,
+            south=south,
+            east=east,
+            west=west,
+            network_type="all",
+            truncate_by_edge=True,
+            simplify=True
+        )
+        Gp = ox.project_graph(G)
+        Gc = ox.consolidate_intersections(
+            Gp, rebuild_graph=True, tolerance=20, dead_ends=False
+        )
 
+        ox.io.save_graphml(Gc, f"{cache_key}.gml")
+        Gc = ox.io.load_graphml(f"{cache_key}.gml")
 
-@app.route("/get_updated_happiness", methods=["POST"])
-def get_updated_happiness_on_adding_house():
-    try:
-        request_data = request.get_json()
-        data = request_data["data"]
-        happiness = request_data["happiness"]
-        result = calculate_updated_happiness_on_adding_facility(data, happiness)
-        return json.dumps(result)
+    body: dict = request.json
+    body = get_nodes_of_facilities(Gc, body)
+    happiness, avg_happiness, data = calculate_happiness(Gc, body)
 
-    except Exception as e:
-        return json.dumps({"error": str(e)})
-
-
-@app.route("/constants", methods=["GET"])
-def get_constants():
-    constants_data = fetch_constants()
-    return jsonify(constants_data)
-
-
-@app.route("/constants", methods=["POST"])
-def update_constants_route():
-    data = request.get_json()
-
-    if not data:
-        return jsonify({"error": "Invalid JSON data provided"}), 400
-
-    result = update_constants(data)
-    return jsonify(result)
+    return {"happiness": happiness, "avg_happiness": avg_happiness, "data": data}
 
 
 @app.route("/get_local_bodies", methods=["GET"])
@@ -133,7 +135,9 @@ def get_local_bodies():
         if state_code:
             filtered_df = filtered_df[filtered_df["stateCode"] == int(state_code)]
         if local_body_type_code:
-            filtered_df = filtered_df[filtered_df["localBodyTypeCode"] == int(local_body_type_code)]
+            filtered_df = filtered_df[
+                filtered_df["localBodyTypeCode"] == int(local_body_type_code)
+            ]
 
         result = filtered_df.to_dict(orient="records")
 
@@ -147,18 +151,21 @@ def get_local_bodies():
 def get_panchayats(statecode):
     compressed_csv_file_path = "data/selected_localbodies.csv.gz"
     df = pd.read_csv(compressed_csv_file_path)
-    # try:
-    state_code = int(statecode)
+    try:
+        state_code = int(statecode)
 
-    filtered_df = df[df["stateCode"] == state_code]
+        filtered_df = df[df["stateCode"] == state_code]
 
-    panchayats_list = filtered_df["coverage_entityName"].tolist()
+        panchayats_data = filtered_df[["coverage_entityName", "localBodyCode"]]
 
-    return jsonify({"panchayats": panchayats_list})
+        # Convert the result to a dictionary
+        panchayats_dict = panchayats_data.to_dict(orient="records")
 
-    # except Exception as e:
-    #     return jsonify({"error": str(e)}), 400
+        return jsonify({"panchayats": panchayats_dict})
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
 
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(debug=False)

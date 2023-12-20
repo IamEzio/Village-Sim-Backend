@@ -7,7 +7,10 @@ click-plugins==1.1.1
 cligj==0.7.2
 fiona==1.9.5
 Flask==3.0.0
+Flask-Compress==1.14
+Flask-Cors==4.0.0
 geopandas==0.13.2
+gunicorn==21.2.0
 idna==3.6
 importlib-metadata==7.0.0
 itsdangerous==2.1.2

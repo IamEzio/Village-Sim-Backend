@@ -2,21 +2,30 @@ import uuid
 import osmnx as ox
 import json
 import subprocess
+from os.path import exists
+
+ox.settings.use_cache = True
 
 
 def fetch_roads_geojson(north: float, south: float, east: float, west: float) -> dict:
-    G = ox.graph_from_bbox(
-        north=north, south=south, east=east, west=west, network_type="all"
-    )
-    Gp = ox.project_graph(G)
-    Gc = ox.consolidate_intersections(
-        Gp, rebuild_graph=True, tolerance=20, dead_ends=False, reconnect_edges=True
-    )
     file_name = f"{north}-{south}-{east}-{west}.gpkg"
-    ox.io.save_graph_geopackage(Gc, filepath=file_name)
+
+    if not exists(file_name):
+        G = ox.graph_from_bbox(
+            north=north,
+            south=south,
+            east=east,
+            west=west,
+            network_type="all",
+            simplify=True,
+            truncate_by_edge=True,
+        )
+        Gp = ox.project_graph(G)
+        ox.io.save_graph_geopackage(Gp, filepath=file_name)
+
     output = subprocess.check_output(
         [
-            f'ogr2ogr -f "GeoJSON" /vsistdout/ -s_srs {Gc.graph["crs"].srs} -t_srs EPSG:4326 {file_name} edges'
+            f'ogr2ogr -f "GeoJSON" /vsistdout/ -t_srs EPSG:4326 {file_name} edges'
         ],
         shell=True,
     )
@@ -28,10 +37,15 @@ def clean_roads_data(data: dict) -> dict:
     roads = {}
     for f in data["features"]:
         if f["geometry"]["type"] == "LineString":
-            if type(f["properties"]["osmid"]) is str:
-                roads[int(f["properties"]["osmid"])] = f["geometry"]["coordinates"]
-            else:
-                roads[f["properties"]["osmid"][0]] = f["geometry"]["coordinates"]
+            try:
+                if isinstance(f["properties"]["osmid"], str):
+                    roads[int(f["properties"]["osmid"])] = f["geometry"]["coordinates"]
+                elif isinstance(f["properties"]["osmid"], int):
+                    roads[f["properties"]["osmid"]] = f["geometry"]["coordinates"]
+                else:
+                    roads[f["properties"]["osmid"][0]] = f["geometry"]["coordinates"]
+            except Exception as exc:
+                print(exc)
 
     return roads
 

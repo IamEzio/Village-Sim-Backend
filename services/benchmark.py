@@ -12,7 +12,7 @@ def func():
     )
     Gp = ox.project_graph(G)
     Gc = ox.consolidate_intersections(
-        Gp, rebuild_graph=True, tolerance=20, dead_ends=False
+        Gp, rebuild_graph=True, tolerance=20, dead_ends=True
     )
 
     start = time.time()

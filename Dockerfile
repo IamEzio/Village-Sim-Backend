@@ -16,6 +16,6 @@ COPY services ./services
 COPY data ./data
 COPY interfaces ./interfaces
 
+EXPOSE $PORT
 
-
-CMD ["flask", "run"]
+CMD ["gunicorn","--config", "gunicorn_config.py", "app:app"]

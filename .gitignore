@@ -805,3 +805,4 @@ $RECYCLE.BIN/
 *.osm
 *.gpkg
 **/cache
+*.gml
