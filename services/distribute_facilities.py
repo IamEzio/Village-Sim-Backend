@@ -178,6 +178,7 @@ def optimize_facility_coordinates(houses, facilities, facility_points):
                 if facility_points[facility][1]:
                     lat = 28.5200000
                     lon = 77.7000000  # max threshold
+                x, y = transformer.transform(lat, lon)
                 individual[facility][facility_uuid]["central_point"]["x"] = lon
                 individual[facility][facility_uuid]["central_point"]["y"] = lat
 
@@ -223,12 +224,13 @@ def optimize_facility_coordinates(houses, facilities, facility_points):
                             continue
                         lat = random.uniform(28.4000000, 28.5200000)
                         lon = random.uniform(77.6500000, 77.7000000)
+                        x, y = transformer.transform(lat, lon)
                         mutated_individual[facility][facility_uuid]["central_point"][
                             "x"
-                        ] = lon
+                        ] = x
                         mutated_individual[facility][facility_uuid]["central_point"][
                             "y"
-                        ] = lat
+                        ] = y
 
         # Combine selected and newly generated individuals
         population = selected_population + new_population
