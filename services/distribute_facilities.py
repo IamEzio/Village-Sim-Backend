@@ -10,12 +10,11 @@ import numpy as np
 import osmnx as ox
 import networkx as nx
 from pyproj import Transformer
-from shapely.geometry import Point
-from sklearn.cluster import DBSCAN
+from sklearn.cluster import AgglomerativeClustering
 
 MAX_HAPPINESS = 2
-EPSILON = 0.00010
-MIN_SAMPLES = 4
+DISTANCE_THRESHOLD = 70
+
 np.random.seed(0)
 
 facility_points = {
@@ -33,33 +32,36 @@ facility_points = {
 }
 
 
-def dist_euclidean(point1: Point, point2: Point) -> float:
-    return ox.distance.euclidean(point1.y, point1.x, point2.y, point2.x)
+def dist_euclidean(point1: dict, point2: dict) -> float:
+    return ox.distance.euclidean(point1["y"], point1["x"], point2["y"], point2["x"])
 
 
-def cluster_houses(houses_coord, epsilon=EPSILON, min_samples=MIN_SAMPLES):
-    coords = [
-        (data["central_point"].x, data["central_point"].y)
-        for data in houses_coord.values()
-    ]
+def cluster_houses(houses_coord):
+    coords = np.array(
+        [
+            (data["central_point"]["x"], data["central_point"]["y"])
+            for data in houses_coord.values()
+        ]
+    )
 
-    # Using DBSCAN for clustering
-    db = DBSCAN(eps=epsilon, min_samples=min_samples).fit(coords)
+    db = AgglomerativeClustering(
+        n_clusters=None,
+        metric="manhattan",
+        linkage="complete",
+        distance_threshold=DISTANCE_THRESHOLD,
+    ).fit(coords)
+
     labels = db.labels_
-
     clusters = {}
-    print("labels: ", labels)
+
     for i, label in enumerate(labels):
         if label not in clusters:
             clusters[label] = []
         clusters[label].append(list(houses_coord.keys())[i])  # Append house UUID
 
-    print("clusters: ", len(clusters))
-
     result_clusters = [
         {uuid: houses_coord[uuid] for uuid in cluster} for cluster in clusters.values()
     ]
-    print("res: ", result_clusters)
 
     return result_clusters
 
@@ -68,12 +70,15 @@ def calculate_cluster_centroid(cluster, houses) -> dict:
     total_lat = 0
     total_lon = 0
     for house_uuid in cluster.keys():
-        total_lat += houses[house_uuid]["central_point"].y
-        total_lon += houses[house_uuid]["central_point"].x
+        total_lat += houses[house_uuid]["central_point"]["y"]
+        total_lon += houses[house_uuid]["central_point"]["x"]
 
     centroid = {
         "uuid": f"{list(cluster.keys())[0]}",  # Using the first UUID for the centroid
-        "central_point": Point(total_lon / len(cluster), total_lat / len(cluster)),
+        "central_point": {  # Using the average of all the points for the centroid
+            "x": total_lon / len(cluster.keys()),
+            "y": total_lat / len(cluster.keys()),
+        },
     }
 
     print("centroid: ", centroid)
@@ -81,39 +86,14 @@ def calculate_cluster_centroid(cluster, houses) -> dict:
     return centroid
 
 
-def convert_central_points(data: dict) -> dict:
-    for key in data["old"]["houses"].keys():
-        d["old"]["houses"][key]["central_point"] = Point(
-            d["old"]["houses"][key]["central_point"]["long"],
-            d["old"]["houses"][key]["central_point"]["lat"],
-        )
-
-    for key in data["old"]["facilities"].keys():
-        for uuid in data["old"]["facilities"][key].keys():
-            x = d["old"]["facilities"][key][uuid]["central_point"]["long"]
-            y = d["old"]["facilities"][key][uuid]["central_point"]["lat"]
-            d["old"]["facilities"][key][uuid]["central_point"] = Point(x, y)
-            (
-                d["old"]["facilities"][key][uuid]["node"],
-                d["old"]["facilities"][key][uuid]["dist"],
-            ) = ox.nearest_nodes(Gc, x, y, return_dist=True)
-
-    if data["new"] != {}:
-        data["new"]["central_point"] = Point(
-            data["new"]["central_point"]["long"], data["new"]["central_point"]["lat"]
-        )
-
-    return data
-
-
 # Code for optimizing facilities coordinates
 
 
 # Function to calculate total happiness for a given set of facility coordinates
-def calculate_total_happiness(houses, house_nodes, facilities, facility_points):
+def calculate_total_happiness(cluster_data, facilities, facility_points):
     total_happiness = 0
 
-    for house_uuid in houses.keys():
+    for cluster_uuid in cluster_data.keys():
         for facility in facilities.keys():
             distance = float("inf")
             for facility_uuid in facilities[facility].keys():
@@ -121,14 +101,14 @@ def calculate_total_happiness(houses, house_nodes, facilities, facility_points):
                 if facility_points[facility][1]:
                     new_distance = nx.shortest_path_length(
                         G=Gc,
-                        source=house_nodes[house_uuid],
+                        source=cluster_data[cluster_uuid]["node"],
                         target=facility_node,
                         weight="length",
                     )
                     if new_distance < distance:
                         distance = new_distance
                 else:
-                    point1 = houses[house_uuid]["central_point"]
+                    point1 = cluster_data[cluster_uuid]["central_point"]
                     point2 = facilities[facility][facility_uuid]["central_point"]
                     new_distance = dist_euclidean(point1, point2)
 
@@ -145,12 +125,16 @@ def calculate_total_happiness(houses, house_nodes, facilities, facility_points):
                         total_happiness += (
                             facility_points[facility][0] * distance / max_dist
                         )
-    avg_happiness = total_happiness / (len(facilities.keys()) * len(houses.keys()))
+    avg_happiness = total_happiness / (
+        len(facilities.keys()) * len(cluster_data.keys())
+    )
+    print("len of cluster_data: ", len(cluster_data.keys()))
+    print("len of facilities: ", len(facilities.keys()))
 
     print("happiness at this stage: ", avg_happiness)
     time.sleep(1)
 
-    return total_happiness
+    return avg_happiness
 
 
 # Genetic Algorithm to optimize facility coordinates
@@ -160,14 +144,20 @@ def optimize_facility_coordinates(houses, facilities, facility_points):
     generations = 10
     mutation_rate = 0.1
 
-    # Precompute House Nodes
-    house_nodes = {}
-    for house_uuid in houses.keys():
-        house_nodes[house_uuid] = ox.nearest_nodes(
-            Gc,
-            houses[house_uuid]["central_point"].x,
-            houses[house_uuid]["central_point"].y,
-        )
+    # Precomputed Cluster Nodes
+    cluster_data = {}
+    house_clusters = cluster_houses(houses)
+    for cluster in house_clusters:
+        cluster_centroid = calculate_cluster_centroid(cluster, houses)
+        cluster_data[cluster_centroid["uuid"]] = {
+            "node": ox.nearest_nodes(
+                Gc,
+                cluster_centroid["central_point"]["x"],
+                cluster_centroid["central_point"]["y"],
+                return_dist=False,
+            ),
+            "central_point": cluster_centroid["central_point"],
+        }
 
     # Initial population
     population = []
@@ -180,7 +170,8 @@ def optimize_facility_coordinates(houses, facilities, facility_points):
                 if facility_points[facility][1]:
                     lat = 28.5200000
                     lon = 77.7000000  # max threshold
-                individual[facility][facility_uuid]["central_point"] = Point(lon, lat)
+                individual[facility][facility_uuid]["central_point"]["x"] = lon
+                individual[facility][facility_uuid]["central_point"]["y"] = lat
 
         population.append(individual)
 
@@ -188,7 +179,7 @@ def optimize_facility_coordinates(houses, facilities, facility_points):
     for generation in range(generations):
         # Evaluate fitness of each individual in the population
         fitness_scores = [
-            calculate_total_happiness(houses, house_nodes, ind, facility_points)
+            calculate_total_happiness(cluster_data, ind, facility_points)
             for ind in population
         ]
 
@@ -223,22 +214,55 @@ def optimize_facility_coordinates(houses, facilities, facility_points):
                     for facility_uuid in mutated_individual[facility].keys():
                         lat = random.uniform(28.4000000, 28.5200000)
                         lon = random.uniform(77.6500000, 77.7000000)
-                        mutated_individual[facility][facility_uuid][
-                            "central_point"
-                        ] = Point(lon, lat)
+                        mutated_individual[facility][facility_uuid]["central_point"][
+                            "x"
+                        ] = lon
+                        mutated_individual[facility][facility_uuid]["central_point"][
+                            "y"
+                        ] = lat
 
         # Combine selected and newly generated individuals
         population = selected_population + new_population
 
     # Select the best individual from the final population
     final_scores = [
-        calculate_total_happiness(houses, house_nodes, ind, facility_points)
+        calculate_total_happiness(cluster_data, ind, facility_points)
         for ind in population
     ]
     best_index = final_scores.index(max(final_scores))
     best_individual = population[best_index]
 
     return best_individual
+
+
+def get_nodes_of_facilities(Gc, data: dict) -> dict:
+    transformer = Transformer.from_crs(4326, int(Gc.graph["crs"].split(":")[-1]))
+
+    for uuid in data["old"]["houses"].keys():
+        x = data["old"]["houses"][uuid]["central_point"]["long"]
+        y = data["old"]["houses"][uuid]["central_point"]["lat"]
+
+        x, y = transformer.transform(y, x)
+
+        data["old"]["houses"][uuid]["central_point"]["x"] = x
+        data["old"]["houses"][uuid]["central_point"]["y"] = y
+
+    for key in data["old"]["facilities"].keys():
+        for uuid in data["old"]["facilities"][key].keys():
+            x = data["old"]["facilities"][key][uuid]["central_point"]["long"]
+            y = data["old"]["facilities"][key][uuid]["central_point"]["lat"]
+
+            x, y = transformer.transform(y, x)
+
+            data["old"]["facilities"][key][uuid]["central_point"]["x"] = x
+            data["old"]["facilities"][key][uuid]["central_point"]["y"] = y
+
+            (
+                data["old"]["facilities"][key][uuid]["node"],
+                data["old"]["facilities"][key][uuid]["dist"],
+            ) = ox.nearest_nodes(Gc, x, y, return_dist=True)
+
+    return data
 
 
 if __name__ == "__main__":
@@ -268,13 +292,13 @@ if __name__ == "__main__":
         houses_coord = json.load(h)
 
         d = {"old": {"houses": houses_coord, "facilities": facilities_coord}, "new": {}}
-        d = convert_central_points(d)
+        d = get_nodes_of_facilities(Gc, d)
 
-        d["new"] = {
-            "key": "uuid",
-            "facility": "school",
-            "central_point": Point(77.68305, 28.5398),
-        }
+        # d["new"] = {
+        #     "key": "uuid",
+        #     "facility": "school",
+        #     "central_point": Point(77.68305, 28.5398),
+        # }
 
         start = time.time()
         optimized_facilities = optimize_facility_coordinates(
