@@ -3,14 +3,19 @@
 # Max_dis
 # Call Magic Soumik code for min_dist
 import json
+import time
 import numpy as np
 import osmnx as ox
 import networkx as nx
 from geopandas import GeoSeries
+from pyproj import Transformer
 from shapely.geometry import Point
+from sklearn.cluster import DBSCAN
 from typing import Tuple
 
 MAX_HAPPINESS = 2
+EPSILON = 0.00010
+MIN_SAMPLES = 4
 np.random.seed(0)
 
 facility_points = {
@@ -50,6 +55,87 @@ def dist_euclidean(point1: Point, point2: Point) -> float:
     return ox.distance.euclidean(point1.y, point1.x, point2.y, point2.x)
 
 
+def calculate_happiness_for_neighborhood(
+    clustercentroid, facilities, facility, happiness, max_dist
+) -> Tuple[dict, dict]:
+    nearest_dist = {}
+    distance = float("inf")
+    uuid = ""
+
+    for facility_uuid in facilities[facility].keys():
+        point1 = clustercentroid["central_point"]
+        point2 = facilities[facility][facility_uuid]["central_point"]
+
+        if facility_points[facility][1]:
+            new_distance = dist_road(point1, point2)
+            if new_distance < distance:
+                distance = new_distance
+                uuid = facility_uuid
+        else:
+            new_distance = dist_euclidean(point1, point2)
+
+            if new_distance < distance:
+                distance = new_distance
+                uuid = facility_uuid
+
+    nearest_dist[facility] = {"id": uuid, "dist": distance}
+
+    if distance != float("inf"):
+        if facility_points[facility][1]:
+            if distance > 0:
+                happiness[facility] = facility_points[facility][0] / distance
+            else:
+                happiness[facility] = MAX_HAPPINESS
+        else:
+            happiness[facility] = facility_points[facility][0] * distance / max_dist
+
+    return happiness, nearest_dist
+
+
+def cluster_houses(houses_coord, epsilon=EPSILON, min_samples=MIN_SAMPLES):
+    coords = [
+        (data["central_point"].x, data["central_point"].y)
+        for data in houses_coord.values()
+    ]
+
+    # Using DBSCAN for clustering
+    db = DBSCAN(eps=epsilon, min_samples=min_samples).fit(coords)
+    labels = db.labels_
+
+    clusters = {}
+    print("labels: ", labels)
+    for i, label in enumerate(labels):
+        if label not in clusters:
+            clusters[label] = []
+        clusters[label].append(list(houses_coord.keys())[i])  # Append house UUID
+
+    print("clusters: ", len(clusters))
+
+    result_clusters = [
+        {uuid: houses_coord[uuid] for uuid in cluster} for cluster in clusters.values()
+    ]
+    print("res: ", result_clusters)
+
+    return result_clusters
+
+
+def calculate_cluster_centroid(cluster, houses) -> dict:
+    total_lat = 0
+    total_lon = 0
+    for house_uuid in cluster.keys():
+        total_lat += houses[house_uuid]["central_point"].y
+        total_lon += houses[house_uuid]["central_point"].x
+
+    centroid = {
+        "uuid": f"{list(cluster.keys())[0]}",  # Using the first UUID for the centroid
+        "central_point": Point(total_lon / len(cluster), total_lat / len(cluster)),
+    }
+
+    print("centroid: ", centroid)
+
+    return centroid
+
+
 def calculate_initial_happiness(initial_data: dict) -> Tuple[dict, float, dict]:
     houses = initial_data["old"]["houses"]
 
@@ -62,20 +148,33 @@ def calculate_initial_happiness(initial_data: dict) -> Tuple[dict, float, dict]:
     for facility in facilities.keys():
         happiness[facility] = 0
     avg_happiness = 0
+    start = time.time()
 
-    for house_uuid in houses.keys():
+    house_clusters = cluster_houses(houses)
+
+    mid = time.time()
+
+    f = 0
+    a = []
+    for cluster in house_clusters:
+        cluster_centroid = calculate_cluster_centroid(cluster, houses)
+        cluster_node = ox.nearest_nodes(
+            Gc, cluster_centroid["central_point"].x, cluster_centroid["central_point"].y
+        )
         nearest_dist = {}
+
         for facility in facilities.keys():
             distance = float("inf")
             uuid = ""
-
             for facility_uuid in facilities[facility].keys():
-                point1 = houses[house_uuid]["central_point"]
+                point1 = cluster_centroid["central_point"]
                 point2 = facilities[facility][facility_uuid]["central_point"]
+                facility_node = facilities[facility][facility_uuid]["node"]
 
                 if facility_points[facility][1]:
-                    new_distance = dist_road(point1, point2)
-
+                    new_distance = nx.shortest_path_length(
+                        G=Gc, source=cluster_node, target=facility_node, weight="length"
+                    )
                     if new_distance < distance:
                         distance = new_distance
                         uuid = facility_uuid
@@ -91,16 +190,33 @@ def calculate_initial_happiness(initial_data: dict) -> Tuple[dict, float, dict]:
             if distance != float("inf"):
                 if facility_points[facility][1]:
                     if distance > 0:
-                        happiness[facility] += facility_points[facility][0] / distance
+                        happiness[facility] = facility_points[facility][0] / distance
                     else:
                         happiness[facility] = MAX_HAPPINESS
                 else:
-                    happiness[facility] += (
+                    happiness[facility] = (
                         facility_points[facility][0] * distance / max_dist
                     )
+        s = 0
+        for house_uuid in cluster.keys():
+            f += 1
+            s += 1
+            initial_data["old"]["houses"][house_uuid]["nearest_dist"] = nearest_dist
+        a.append(s)
 
-        initial_data["old"]["houses"][house_uuid]["nearest_dist"] = nearest_dist
+    minpos = a.index(min(a))
 
+    end = time.time()
+    print("Time taken: ", end - start)
+    print("Time taken for clustering: ", mid - start)
+    print("Total houses ", len(houses))
+    print("Total house clusters: ", len(house_clusters))
+    print("Total houses in all clusters: ", f)
+    print("Total houses in each cluster: ", a)
+    # print("Cluster with minimum houses: ", minpos, " ", house_clusters[minpos])
+
+    # for house_data in house_clusters[minpos].values():
+    #     print("House coordinates: ", house_data["central_point"])
     # get average of all happiness
     for facility in happiness.keys():
         avg_happiness += happiness[facility]
@@ -114,7 +230,7 @@ def calculate_updated_happiness_on_adding_facility(
     data, happiness
 ) -> Tuple[dict, float, dict]:
     houses = data["old"]["houses"]
-    new_building = data["new"]["facility_type"]
+    new_building = data["new"]["facility"]
     new_building_coord = data["new"]["central_point"]
 
     if len(houses) == 0:
@@ -219,10 +335,13 @@ def convert_central_points(data: dict) -> dict:
 
     for key in data["old"]["facilities"].keys():
         for uuid in data["old"]["facilities"][key].keys():
-            d["old"]["facilities"][key][uuid]["central_point"] = Point(
-                d["old"]["facilities"][key][uuid]["central_point"]["long"],
-                d["old"]["facilities"][key][uuid]["central_point"]["lat"],
-            )
+            x = d["old"]["facilities"][key][uuid]["central_point"]["long"]
+            y = d["old"]["facilities"][key][uuid]["central_point"]["lat"]
+            d["old"]["facilities"][key][uuid]["central_point"] = Point(x, y)
+            (
+                d["old"]["facilities"][key][uuid]["node"],
+                d["old"]["facilities"][key][uuid]["dist"],
+            ) = ox.nearest_nodes(Gc, x, y, return_dist=True)
 
     if data["new"] != {}:
         data["new"]["central_point"] = Point(
@@ -248,11 +367,12 @@ if __name__ == "__main__":
     # ox.io.save_graphml(Gc, "cache.gml")
 
     Gc = ox.io.load_graphml("cache.gml")
+    transformer = Transformer.from_crs(Gc.graph["crs"], "EPSG:4326")
 
     max_dist = ox.stats.edge_length_total(Gc)
 
-    with open("../data/facilities-mini.json", "r") as f, open(
-        "../data/house-mini.json", "r"
+    with open("../data/facilities.json", "r") as f, open(
+        "../data/house.json", "r"
     ) as h:
         facilities_coord = json.load(f)
         houses_coord = json.load(h)
@@ -263,14 +383,14 @@ if __name__ == "__main__":
         happiness, avg_happiness, d = calculate_initial_happiness(d)
         print(happiness)
         print(avg_happiness)
-        print(d)
+        # print(d)
 
         d["new"] = {
             "key": "uuid",
-            "facility_type": "school",
+            "facility": "school",
             "central_point": Point(77.68305, 28.5398),
         }
 
-        happiness, avg_happiness, d = calculate_updated_happiness_on_adding_facility(
-            d, happiness
-        )
+        # happiness, avg_happiness, d = calculate_updated_happiness_on_adding_facility(
+        #     d, happiness
+        # )
